@@ -4,10 +4,9 @@ import ElementPlus from 'element-plus'
 import 'element-plus/dist/index.css'
 import './style.css'
 import App from './App.vue'
-import HomeView from './views/HomeView.vue'
-import UploadView from './views/UploadView.vue'
-import CandidateView from './views/CandidateView.vue'
+import { createPinia } from 'pinia'
 
+//定义路由规则
 const routes = [
 	{
 		path: '/',
@@ -16,23 +15,48 @@ const routes = [
 	{
 		path: '/home',
 		name: 'home',
-		component: HomeView
+		component: () => import('./views/HomeView.vue')
 	},
 	{
 		path: '/upload',
 		name: 'upload',
-		component: UploadView
+		component: () => import('./views/UploadView.vue')
 	},
 	{
 		path: '/candidates',
 		name: 'candidates',
-		component: CandidateView
+		component: () => import('./views/CandidateView.vue'),
+		//嵌套路由，候选详情页
+		// children: [
+		// 	{
+		// 		path: ':id',
+		// 		name: 'candidateDetail',
+		// 		component: () => import('./views/CandidateDetailView.vue')
+		// 	}
+		// ]
 	}
 ]
 
+//创建路由实例
 const router = createRouter({
-	history: createWebHistory(),
+	history: createWebHistory(),//路由模式，使用HTML5的history模式
 	routes
 })
 
-createApp(App).use(router).use(ElementPlus).mount('#app')
+//加载路由实例
+const app = createApp(App)
+app.use(router)
+
+//加载Element Plus组件库
+app.use(ElementPlus)
+
+//加载Pinia状态管理库
+const pinia = createPinia()
+app.use(pinia)
+
+//挂载Vue应用
+app.mount('#app')
+
+
+
+

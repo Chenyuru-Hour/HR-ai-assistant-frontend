@@ -20,7 +20,7 @@
 
 
 <script setup lang="ts">
-import { userStore } from '../store/user'
+import { userStore } from '@/store/user'
 import { storeToRefs } from 'pinia'
 
 const user = userStore()

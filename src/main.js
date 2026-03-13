@@ -1,7 +1,9 @@
 import { createApp } from 'vue'
 import { createRouter, createWebHistory } from 'vue-router'
 import ElementPlus from 'element-plus'
+import { zhCn } from 'element-plus/es/locale/index.mjs'
 import 'element-plus/dist/index.css'
+import 'uno.css'
 import './style.css'
 import App from './App.vue'
 import { createPinia } from 'pinia'
@@ -48,7 +50,9 @@ const app = createApp(App)
 app.use(router)
 
 //加载Element Plus组件库
-app.use(ElementPlus)
+app.use(ElementPlus, {
+	locale: zhCn
+})
 
 //加载Pinia状态管理库
 const pinia = createPinia()

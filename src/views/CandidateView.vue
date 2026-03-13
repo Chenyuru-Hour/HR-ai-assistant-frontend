@@ -5,33 +5,118 @@
 				<h2 class="panel-title">候选列表</h2>
 				<p class="panel-desc">集中查看解析后的候选人基础信息与当前状态。</p>
 			</div>
-			<el-tag type="info" effect="plain">共 {{ candidateList.length }} 人</el-tag>
+			<el-tag :type="summaryTagType" effect="plain">{{ summaryLabel }}</el-tag>
 		</header>
 
-		<el-table :data="candidateList" class="candidate-table" border stripe>
+		<div v-if="loading" class="candidate-loading">
+			<el-skeleton :rows="6" animated />
+		</div>
+
+		<el-result
+			v-else-if="errorMessage"
+			class="candidate-error"
+			icon="error"
+			title="候选列表加载失败"
+			:sub-title="errorMessage"
+		>
+			<template #extra>
+				<el-button type="primary" @click="loadCandidates">重新加载</el-button>
+			</template>
+		</el-result>
+
+		<el-table v-else-if="candidateList.length" :data="candidateList" class="candidate-table" border stripe>
 			<el-table-column prop="name" label="姓名" min-width="120" />
 			<el-table-column prop="email" label="邮箱" min-width="220" />
 			<el-table-column prop="status" label="状态" min-width="120">
 				<template #default="{ row }">
-					<el-tag :type="statusTypeMap[row.status] || 'info'" effect="plain">{{ row.status }}</el-tag>
+					<el-tag :type="statusTypeMap[row.status] || 'info'" effect="plain">{{ row.status || '待处理' }}</el-tag>
 				</template>
 			</el-table-column>
 		</el-table>
+
+		<el-empty v-else class="candidate-empty" description="暂无候选人数据" />
 	</section>
 </template>
 
 <script setup>
-const candidateList = [
-	{ name: '张三', email: 'zhangsan@example.com', status: '待沟通' },
-	{ name: '李四', email: 'lisi@example.com', status: '面试中' },
-	{ name: '王五', email: 'wangwu@example.com', status: '已入库' }
-]
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { fetchCandidates } from '@/services/candidate'
+
+const candidateList = ref([])
+const loading = ref(false)
+const errorMessage = ref('')
+
+let activeRequestController = null
 
 const statusTypeMap = {
+	待处理: 'info',
 	待沟通: 'warning',
 	面试中: 'primary',
 	已入库: 'success'
 }
+
+const summaryLabel = computed(() => {
+	if (loading.value) {
+		return '加载中'
+	}
+
+	if (errorMessage.value) {
+		return '加载失败'
+	}
+
+	return `共 ${candidateList.value.length} 人`
+})
+
+const summaryTagType = computed(() => (errorMessage.value ? 'danger' : 'info'))
+
+function abortActiveRequest() {
+	if (!activeRequestController) {
+		return
+	}
+
+	activeRequestController.abort()
+	activeRequestController = null
+}
+
+function isRequestCanceled(error) {
+	return error?.code === 'ERR_CANCELED' || error?.name === 'CanceledError'
+}
+
+async function loadCandidates() {
+	abortActiveRequest()
+	loading.value = true
+	errorMessage.value = ''
+
+	const controller = new AbortController()
+	activeRequestController = controller
+
+	try {
+		candidateList.value = await fetchCandidates({
+			signal: controller.signal
+		})
+	} catch (error) {
+		if (isRequestCanceled(error)) {
+			return
+		}
+
+		candidateList.value = []
+		errorMessage.value = error.message || '候选列表加载失败'
+	} finally {
+		if (activeRequestController === controller) {
+			activeRequestController = null
+		}
+
+		loading.value = false
+	}
+}
+
+onMounted(() => {
+	loadCandidates()
+})
+
+onBeforeUnmount(() => {
+	abortActiveRequest()
+})
 </script>
 
 <style scoped>
@@ -65,6 +150,12 @@ const statusTypeMap = {
 }
 
 .candidate-table {
+	margin-top: 18px;
+}
+
+.candidate-loading,
+.candidate-empty,
+.candidate-error {
 	margin-top: 18px;
 }
 

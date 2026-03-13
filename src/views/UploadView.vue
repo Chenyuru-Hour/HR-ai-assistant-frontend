@@ -10,7 +10,6 @@
 				<template #header>
 					<div class="card-header">
 						<span>文件上传</span>
-						<el-tag type="info" effect="plain">模拟模式</el-tag>
 					</div>
 				</template>
 
@@ -20,15 +19,16 @@
 					drag
 					action="#"
 					:auto-upload="false"
+					:disabled="isBusy"
+					:limit="1"
 					:show-file-list="false"
-					:before-upload="beforeUpload"
 					:on-change="handleFileChange"
 				>
 					<el-icon class="upload-icon">
 						<UploadFilled />
 					</el-icon>
 					<div class="upload-text">将简历文件拖到此处，或 <em>点击选择文件</em></div>
-					<div class="upload-tip">支持任意文件（当前为前端模拟，不会发起真实上传）</div>
+					<div class="upload-tip">上传前请先配置 VITE_API_BASE_URL，文件会提交到 FastAPI 后端处理</div>
 				</el-upload>
 			</el-card>
 
@@ -56,7 +56,7 @@
 						<el-icon class="is-loading">
 							<Loading />
 						</el-icon>
-						正在解析简历内容...
+						正在等待后端返回解析结果...
 					</span>
 				</div>
 
@@ -71,7 +71,7 @@
 				</div>
 
 				<div v-if="currentStatus === 'failed'" class="error-text">
-					处理失败，请点击“重新上传”后重试。
+					{{ errorMessage || '处理失败，请点击“重新上传”后重试。' }}
 				</div>
 			</el-card>
 		</div>
@@ -86,16 +86,20 @@
 import { computed, onBeforeUnmount, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Loading, UploadFilled } from '@element-plus/icons-vue'
+import { fetchResumeTask, uploadResume } from '@/services/resume'
 
 const uploadRef = ref(null)
 
 const currentStatus = ref('pending')
 const taskId = ref('')
 const uploadProgress = ref(0)
+const errorMessage = ref('')
 const resultData = reactive({
 	name: '',
 	email: ''
 })
+
+const POLL_INTERVAL = 2000
 
 const statusConfig = {
 	pending: { label: '待上传', tagType: 'info' },
@@ -106,120 +110,202 @@ const statusConfig = {
 }
 
 const statusMeta = computed(() => statusConfig[currentStatus.value])
+const isBusy = computed(
+	() => currentStatus.value === 'uploading' || currentStatus.value === 'processing'
+)
 
-// 模拟流程使用的计时器：上传进度计时 + 阶段切换计时
-let progressTimer = null
-let stageTimer = null
+let pollTimer = null
+let activeRequestController = null
 
-// 阻止 el-upload 发起真实请求（当前页面仅做前端交互模拟）
-function beforeUpload() {
-	return false
-}
-
-function generateTaskId() {
-	return `TASK-${Date.now()}-${Math.floor(Math.random() * 900 + 100)}`
-}
-
-function clearSimTimers() {
-	if (progressTimer) {
-		clearInterval(progressTimer)
-		progressTimer = null
-	}
-
-	if (stageTimer) {
-		clearTimeout(stageTimer)
-		stageTimer = null
-	}
-}
-
-function handleFileChange(file) {
-	if (!file?.raw) return
-
-	// 选择文件后，启动“上传中 -> 处理中 -> 已完成”的模拟状态流转
-	simulateUpload()
-}
-
-// 模拟上传阶段：持续更新进度条，2 秒后进入处理阶段
-function simulateUpload() {
-	clearSimTimers()
-	uploadRef.value?.clearFiles()
-
-	currentStatus.value = 'uploading'
-	taskId.value = generateTaskId()
-	uploadProgress.value = 0
+function resetResultData() {
 	resultData.name = ''
 	resultData.email = ''
-
-	ElMessage.info('开始上传（模拟）')
-
-	progressTimer = setInterval(() => {
-		if (uploadProgress.value >= 90) return
-		uploadProgress.value += 15
-	}, 300)
-
-	stageTimer = setTimeout(() => {
-		if (progressTimer) {
-			clearInterval(progressTimer)
-			progressTimer = null
-		}
-		uploadProgress.value = 100
-		simulateProcess()
-	}, 2000)
 }
 
-// 模拟处理阶段：2 秒后返回解析结果
-function simulateProcess() {
-	clearSimTimers()
-	currentStatus.value = 'processing'
+function clearPollTimer() {
+	if (!pollTimer) {
+		return
+	}
 
-	ElMessage.info('上传完成，开始处理（模拟）')
-
-	stageTimer = setTimeout(() => {
-		simulateComplete()
-	}, 2000)
+	clearTimeout(pollTimer)
+	pollTimer = null
 }
 
-// 模拟完成阶段：展示固定解析结果（后续可替换为真实后端返回）
-function simulateComplete() {
-	clearSimTimers()
+function abortActiveRequest() {
+	if (!activeRequestController) {
+		return
+	}
+
+	activeRequestController.abort()
+	activeRequestController = null
+}
+
+function createRequestController() {
+	abortActiveRequest()
+	activeRequestController = new AbortController()
+	return activeRequestController
+}
+
+function releaseRequestController(controller) {
+	if (activeRequestController === controller) {
+		activeRequestController = null
+	}
+}
+
+function isRequestCanceled(error) {
+	return error?.code === 'ERR_CANCELED' || error?.name === 'CanceledError'
+}
+
+function clearAsyncState() {
+	clearPollTimer()
+	abortActiveRequest()
+}
+
+function updateUploadProgress(event) {
+	if (!event?.total) {
+		return
+	}
+
+	uploadProgress.value = Math.min(99, Math.round((event.loaded / event.total) * 100))
+}
+
+function applyCompletedState(candidate = {}) {
+	clearPollTimer()
 	currentStatus.value = 'completed'
-	resultData.name = '张三'
-	resultData.email = 'zhangsan@example.com'
+	resultData.name = candidate.name || ''
+	resultData.email = candidate.email || ''
+	errorMessage.value = ''
 
-	ElMessage.success('简历解析完成（模拟）')
+	ElMessage.success('简历解析完成')
 }
 
-// 预留失败状态模拟函数，方便后续接入真实异常处理逻辑
-function simulateFail() {
-	clearSimTimers()
+function applyFailedState(message) {
+	clearAsyncState()
 	currentStatus.value = 'failed'
-	ElMessage.error('解析失败（模拟）')
+	uploadProgress.value = 0
+	resetResultData()
+	errorMessage.value = message || '处理失败，请点击“重新上传”后重试。'
+
+	ElMessage.error(errorMessage.value)
 }
 
-// 重置到初始状态（待上传）
-function reset() {
-	clearSimTimers()
-	uploadRef.value?.clearFiles()
+function scheduleTaskPolling(nextTaskId) {
+	clearPollTimer()
+	pollTimer = setTimeout(() => {
+		pollResumeTask(nextTaskId)
+	}, POLL_INTERVAL)
+}
 
+async function resolveUploadResult(taskResult) {
+	taskId.value = taskResult.taskId || ''
+
+	if (taskResult.status === 'completed') {
+		applyCompletedState(taskResult.candidate)
+		return
+	}
+
+	if (taskResult.status === 'failed') {
+		applyFailedState(taskResult.message || '简历解析失败')
+		return
+	}
+
+	if (!taskResult.taskId) {
+		applyFailedState('后端未返回解析结果或任务 ID')
+		return
+	}
+
+	currentStatus.value = 'processing'
+	errorMessage.value = ''
+
+	ElMessage.info('上传完成，正在等待后端解析结果')
+	scheduleTaskPolling(taskResult.taskId)
+}
+
+async function pollResumeTask(nextTaskId) {
+	const controller = createRequestController()
+
+	try {
+		const taskResult = await fetchResumeTask(nextTaskId, {
+			signal: controller.signal
+		})
+
+		if (taskResult.status === 'completed') {
+			applyCompletedState(taskResult.candidate)
+			return
+		}
+
+		if (taskResult.status === 'failed') {
+			applyFailedState(taskResult.message || '简历解析失败')
+			return
+		}
+
+		currentStatus.value = 'processing'
+		scheduleTaskPolling(nextTaskId)
+	} catch (error) {
+		if (isRequestCanceled(error)) {
+			return
+		}
+
+		applyFailedState(error.message || '获取解析结果失败')
+	} finally {
+		releaseRequestController(controller)
+	}
+}
+
+async function handleFileChange(file) {
+	if (!file?.raw) {
+		return
+	}
+
+	if (isBusy.value) {
+		ElMessage.warning('当前任务仍在执行中，请稍后再试')
+		return
+	}
+
+	const controller = createRequestController()
+	uploadRef.value?.clearFiles()
+	clearPollTimer()
+	currentStatus.value = 'uploading'
+	taskId.value = ''
+	uploadProgress.value = 1
+	errorMessage.value = ''
+	resetResultData()
+
+	try {
+		ElMessage.info('开始上传')
+
+		const taskResult = await uploadResume(file.raw, {
+			signal: controller.signal,
+			onUploadProgress: updateUploadProgress
+		})
+
+		uploadProgress.value = 100
+		await resolveUploadResult(taskResult)
+	} catch (error) {
+		if (isRequestCanceled(error)) {
+			return
+		}
+
+		applyFailedState(error.message || '上传失败')
+	} finally {
+		releaseRequestController(controller)
+	}
+}
+
+function reset() {
+	clearAsyncState()
+	uploadRef.value?.clearFiles()
 	currentStatus.value = 'pending'
 	taskId.value = ''
 	uploadProgress.value = 0
-	resultData.name = ''
-	resultData.email = ''
+	errorMessage.value = ''
+	resetResultData()
 
 	ElMessage.info('已重置为待上传状态')
 }
 
 onBeforeUnmount(() => {
-	clearSimTimers()
-})
-
-defineExpose({
-	simulateUpload,
-	simulateProcess,
-	simulateComplete,
-	simulateFail,
-	reset
+	clearAsyncState()
 })
 </script>
 
